@@ -1,7 +1,15 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  logging: {
+    fetches: {
+      fullUrl: true,
+    },
+  },
+  // Experimental features
+  experimental: {
+    instrumentationHook: true,
+  },
 };
 
 export default nextConfig;
