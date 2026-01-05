@@ -24,7 +24,18 @@ export function proxy(request: NextRequest) {
   const method = request.method;
   
   console.log(`🌐 [PROXY] ${method} ${pathname}`);
-  
+  if (method === 'OPTIONS') {
+    console.log(`🔄 [PROXY] Preflight request - allowing`);
+    return new NextResponse(null, {
+      status: 204, // ← 204 No Content (không phải 200)
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-username, x-session-token',
+        'Access-Control-Max-Age': '86400', // Cache preflight 24h
+      },
+    });
+  }
   // Handle OPTIONS (preflight)
   if (method === 'OPTIONS') {
     console.log(`🔄 [PROXY] Preflight request`);
@@ -44,7 +55,10 @@ export function proxy(request: NextRequest) {
     console.log(`🔐 [PROXY] Protected API route: ${pathname}`);
     
     const username = request.headers.get('x-username');
-    console.log(`👤 [PROXY] Username header: "${username}"`);
+    const sessionToken = request.headers.get('x-session-token');
+    
+    console.log(`👤 [PROXY] Username: "${username}"`);
+    console.log(`🔑 [PROXY] Session Token: "${sessionToken?.substring(0, 8)}..."`);
     
     // Kiểm tra có username không
     if (!username) {
@@ -62,11 +76,44 @@ export function proxy(request: NextRequest) {
       );
     }
     
-    // Kiểm tra session có hợp lệ không
-    const sessionCheck = checkAndRefreshSession(username);
+    // Kiểm tra có session token không
+    if (!sessionToken) {
+      console.log(`❌ [PROXY] Blocking: No session token header`);
+      return addCorsHeaders(
+        NextResponse.json(
+          {
+            success: false,
+            message: 'Session token required. Please login again.',
+            code: 'NO_SESSION_TOKEN',
+            path: pathname
+          },
+          { status: 401 }
+        )
+      );
+    }
+    
+    // Kiểm tra session có hợp lệ không (bao gồm cả token validation)
+    const sessionCheck = checkAndRefreshSession(username, sessionToken);
     
     if (!sessionCheck.valid) {
-      console.log(`❌ [PROXY] Session expired for user: ${username}`);
+      console.log(`❌ [PROXY] Session invalid for user: ${username}, reason: ${sessionCheck.reason}`);
+      
+      // Nếu token không khớp => đã login từ nơi khác
+      if (sessionCheck.reason === 'TOKEN_MISMATCH') {
+        return addCorsHeaders(
+          NextResponse.json(
+            {
+              success: false,
+              message: 'Your account has been logged in from another device.',
+              code: 'SESSION_REPLACED',
+              path: pathname
+            },
+            { status: 401 }
+          )
+        );
+      }
+      
+      // Các lý do khác (expired, no session, etc.)
       return addCorsHeaders(
         NextResponse.json(
           {

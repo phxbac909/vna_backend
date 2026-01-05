@@ -1,39 +1,50 @@
-// app/api/auth/session/route.ts
+// app/api/auth/logout/route.ts
 import { NextRequest, NextResponse } from 'next/server';
-import { checkSessionOnly } from '@/lib/database';
+import { logoutUser } from '@/lib/database';
 
-export async function GET(request: NextRequest) {
+export async function POST(request: NextRequest) {
   try {
-    // Lấy username từ query parameter
-    const { searchParams } = new URL(request.url);
-    const username = searchParams.get('username');
-    
+    const body = await request.json();
+    const { username } = body;
+
     if (!username) {
       return NextResponse.json(
         {
           success: false,
-          message: 'Thiếu username',
+          message: 'Username là bắt buộc',
           code: 'MISSING_USERNAME'
         },
         { status: 400 }
       );
     }
 
-    // Chỉ kiểm tra, không refresh
-    const isValid = checkSessionOnly(username);
+    // Clear session token và expiresAt
+    const result = logoutUser(username);
+
+    if (!result) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: 'User không tồn tại',
+          code: 'USER_NOT_FOUND'
+        },
+        { status: 404 }
+      );
+    }
+
+    console.log(`👋 [LOGOUT API] User ${username} logged out successfully`);
 
     return NextResponse.json(
       {
         success: true,
-        message: isValid ? 'Session còn hiệu lực' : 'Session đã hết hạn',
-        code: isValid ? 'SESSION_VALID' : 'SESSION_EXPIRED',
-        data: { valid: isValid }
+        message: 'Đăng xuất thành công',
+        code: 'SUCCESS'
       },
       { status: 200 }
     );
 
   } catch (error) {
-    console.error('Check session error:', error);
+    console.error('Logout error:', error);
     return NextResponse.json(
       {
         success: false,
@@ -50,8 +61,8 @@ export async function OPTIONS(request: NextRequest) {
     status: 200,
     headers: {
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-username',
     },
   });
 }

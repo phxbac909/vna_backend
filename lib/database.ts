@@ -2,14 +2,13 @@ import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
 
-
 export interface User {
   id: string;
   username: string;
   password: string;
   role: 'admin' | 'user';
   createdAt: string;
-  expiresAt?: string; 
+  expiresAt?: string;
   sessionToken?: string; // UUID cho session hiện tại
 }
 
@@ -79,7 +78,6 @@ export const findUserById = (id: string): User | undefined => {
   return db.users.find(user => user.id === id);
 };
 
-
 export const getAllUsers = (): User[] => {
   const db = readDatabase();
   return db.users;
@@ -112,112 +110,134 @@ export const updateUserPassword = (id: string, newPassword: string): boolean => 
 // Thêm 30 giây vào thời gian hiện tại
 const getNewExpirationTime = (): string => {
   const now = new Date();
-  now.setSeconds(now.getSeconds() + 30); // Thêm 30 giây
+  now.setSeconds(now.getSeconds() + 30);
   return now.toISOString();
 };
 
-// Cập nhật thời gian hết hạn
-export const updateUserExpiration = (username: string): boolean => {
+// Generate UUID cho session
+export const generateSessionToken = (): string => {
+  return randomUUID();
+};
+
+// Set session token khi login (GHI ĐÈ token cũ)
+export const setUserSessionToken = (username: string, token: string): boolean => {
   const db = readDatabase();
   const userIndex = db.users.findIndex(user => user.username === username);
   
   if (userIndex === -1) return false;
   
+  db.users[userIndex].sessionToken = token;
   db.users[userIndex].expiresAt = getNewExpirationTime();
   writeDatabase(db);
+  
+  console.log(`🔑 [DB] Set session token for ${username}: ${token.substring(0, 8)}...`);
   return true;
 };
 
-// Kiểm tra user có còn hiệu lực không
-export const isUserSessionValid = (username: string): boolean => {
+// Verify session token
+export const verifySessionToken = (username: string, token: string): boolean => {
   const db = readDatabase();
   const user = db.users.find(user => user.username === username);
   
-  if (!user || !user.expiresAt) return false;
+  if (!user || !user.sessionToken) {
+    console.log(`❌ [DB] No session token found for ${username}`);
+    return false;
+  }
   
-  const now = new Date();
-  const expiresAt = new Date(user.expiresAt);
+  const isValid = user.sessionToken === token;
+  console.log(`🔍 [DB] Token verification for ${username}: ${isValid ? '✅ VALID' : '❌ INVALID'}`);
   
-  return expiresAt > now;
+  return isValid;
 };
 
-// Set expiresAt khi login
-export const setUserSession = (username: string): boolean => {
-  return updateUserExpiration(username);
-};
-
-// Clear expiresAt khi logout
-export const clearUserSession = (username: string): boolean => {
+// Clear session token khi logout
+export const clearUserSessionToken = (username: string): boolean => {
   const db = readDatabase();
   const userIndex = db.users.findIndex(user => user.username === username);
   
   if (userIndex === -1) return false;
   
+  delete db.users[userIndex].sessionToken;
   delete db.users[userIndex].expiresAt;
   writeDatabase(db);
+  
+  console.log(`🗑️ [DB] Cleared session token for ${username}`);
   return true;
 };
 
-// Lấy thời gian hết hạn
-export const getUserExpiresAt = (username: string): string | null => {
-  const db = readDatabase();
-  const user = db.users.find(user => user.username === username);
-  
-  return user?.expiresAt || null;
-};
-
-export const loginUser = (username: string): boolean => {
-  const db = readDatabase();
-  const userIndex = db.users.findIndex(user => user.username === username);
-  
-  if (userIndex === -1) return false;
-  
-  db.users[userIndex].expiresAt = getNewExpirationTime();
-  writeDatabase(db);
-  return true;
-};
-
-// Logout: Clear expiresAt
-export const logoutUser = (username: string): boolean => {
-  const db = readDatabase();
-  const userIndex = db.users.findIndex(user => user.username === username);
-  
-  if (userIndex === -1) return false;
-  
-  delete db.users[userIndex].expiresAt;
-  writeDatabase(db);
-  return true;
-};
-
-// Kiểm tra và refresh session nếu còn hiệu lực
-export const checkAndRefreshSession = (username: string): { valid: boolean; expiresAt?: string } => {
+// Login: Tạo session token mới (ghi đè token cũ nếu có)
+export const loginUser = (username: string): { success: boolean; sessionToken?: string } => {
   const db = readDatabase();
   const userIndex = db.users.findIndex(user => user.username === username);
   
   if (userIndex === -1) {
-    return { valid: false };
+    return { success: false };
+  }
+  
+  const sessionToken = generateSessionToken();
+  db.users[userIndex].sessionToken = sessionToken;
+  db.users[userIndex].expiresAt = getNewExpirationTime();
+  writeDatabase(db);
+  
+  console.log(`✅ [DB] User ${username} logged in, token: ${sessionToken.substring(0, 8)}...`);
+  
+  return { success: true, sessionToken };
+};
+
+// Logout: Clear token
+export const logoutUser = (username: string): boolean => {
+  return clearUserSessionToken(username);
+};
+
+// Kiểm tra và refresh session (bao gồm cả token validation)
+export const checkAndRefreshSession = (
+  username: string, 
+  token: string
+): { valid: boolean; expiresAt?: string; reason?: string } => {
+  const db = readDatabase();
+  const userIndex = db.users.findIndex(user => user.username === username);
+  
+  if (userIndex === -1) {
+    return { valid: false, reason: 'USER_NOT_FOUND' };
   }
   
   const user = db.users[userIndex];
   
-  // Nếu không có expiresAt => chưa login
+  // Check 1: Có session token không?
+  if (!user.sessionToken) {
+    return { valid: false, reason: 'NO_SESSION' };
+  }
+  
+  // Check 2: Token có khớp không?
+  if (user.sessionToken !== token) {
+    console.log(`❌ [DB] Token mismatch for ${username}!`);
+    console.log(`   Expected: ${user.sessionToken?.substring(0, 8)}...`);
+    console.log(`   Received: ${token.substring(0, 8)}...`);
+    return { valid: false, reason: 'TOKEN_MISMATCH' };
+  }
+  
+  // Check 3: Có expiresAt không?
   if (!user.expiresAt) {
-    return { valid: false };
+    return { valid: false, reason: 'NO_EXPIRATION' };
   }
   
   const now = new Date();
   const expiresAt = new Date(user.expiresAt);
   
-  // Session đã hết hạn
+  // Check 4: Session đã hết hạn chưa?
   if (expiresAt <= now) {
-    delete db.users[userIndex].expiresAt; // Xóa expiresAt
+    console.log(`⏰ [DB] Session expired for ${username}`);
+    delete db.users[userIndex].sessionToken;
+    delete db.users[userIndex].expiresAt;
     writeDatabase(db);
-    return { valid: false };
+    return { valid: false, reason: 'SESSION_EXPIRED' };
   }
   
-  // Session còn hiệu lực => RESET về 30s nữa
+  // Session hợp lệ => REFRESH về 30s nữa
   db.users[userIndex].expiresAt = getNewExpirationTime();
   writeDatabase(db);
+  
+  console.log(`✅ [DB] Session refreshed for ${username}, new expiry: ${db.users[userIndex].expiresAt}`);
   
   return { 
     valid: true, 
@@ -226,11 +246,12 @@ export const checkAndRefreshSession = (username: string): { valid: boolean; expi
 };
 
 // Chỉ kiểm tra session (không refresh)
-export const checkSessionOnly = (username: string): boolean => {
+export const checkSessionOnly = (username: string, token: string): boolean => {
   const db = readDatabase();
   const user = db.users.find(user => user.username === username);
   
-  if (!user || !user.expiresAt) return false;
+  if (!user || !user.expiresAt || !user.sessionToken) return false;
+  if (user.sessionToken !== token) return false;
   
   const now = new Date();
   const expiresAt = new Date(user.expiresAt);

@@ -43,12 +43,9 @@ export async function POST(request: NextRequest) {
       );
     }
   // Set expiresAt cho user (30 giây từ bây giờ)
-    loginUser(username);
+    const loginResult = loginUser(username);
       
-    // Lấy lại user để có expiresAt mới
-    const updatedUser = findUserByUsername(username);
-    
-    if (!updatedUser) {
+    if (!loginResult.success || !loginResult.sessionToken) {
       return NextResponse.json(
         {
           success: false,
@@ -58,6 +55,10 @@ export async function POST(request: NextRequest) {
         { status: 500 }
       );
     }
+
+    console.log(`✅ [LOGIN API] User ${username} logged in successfully`);
+    console.log(`   Session Token: ${loginResult.sessionToken.substring(0, 8)}...`);
+
     return NextResponse.json(
       {
         success: true,
@@ -67,7 +68,8 @@ export async function POST(request: NextRequest) {
           id: user.id,
           username: user.username,
           role: user.role,
-          createdAt: user.createdAt
+          createdAt: user.createdAt,
+          sessionToken: loginResult.sessionToken // ← Trả về token cho client
         }
       },
       { status: 200 }
