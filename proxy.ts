@@ -8,7 +8,7 @@ console.log('🚀 Proxy loaded! Server time:', new Date().toISOString());
 const PUBLIC_PATTERNS = [
   /^\/$/,                           // Root path
   /^\/login$/,                      // Login page
-  /^\/api\/auth\/(login|logout)$/,  // Login/Logout API
+  /^\/api\/auth\/(login|logout|session)$/,  // Login/Logout/Session check API
 ];
 
 // Helper để thêm CORS headers
@@ -24,35 +24,61 @@ export function proxy(request: NextRequest) {
   const method = request.method;
   
   console.log(`🌐 [PROXY] ${method} ${pathname}`);
-  if (method === 'OPTIONS') {
-    console.log(`🔄 [PROXY] Preflight request - allowing`);
-    return new NextResponse(null, {
-      status: 204, // ← 204 No Content (không phải 200)
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-username, x-session-token',
-        'Access-Control-Max-Age': '86400', // Cache preflight 24h
-      },
-    });
-  }
+  
   // Handle OPTIONS (preflight)
   if (method === 'OPTIONS') {
     console.log(`🔄 [PROXY] Preflight request`);
     return addCorsHeaders(new NextResponse(null, { status: 200 }));
   }
   
-  // Check public patterns
+  // Check public patterns - Để các endpoint này đi qua HOÀN TOÀN
   const isPublic = PUBLIC_PATTERNS.some(pattern => pattern.test(pathname));
   
   if (isPublic) {
-    console.log(`✅ [PROXY] Public route: ${pathname}`);
+    console.log(`✅ [PROXY] Public route: ${pathname} - SKIP AUTH CHECK`);
     return addCorsHeaders(NextResponse.next());
   }
   
   // Protected routes - cần auth
   if (pathname.startsWith('/api/')) {
-    console.log(`🔐 [PROXY] Protected API route: ${pathname}`);
+    // Đặc biệt: endpoint /api/auth/session CHỈ kiểm tra session, KHÔNG refresh
+    if (pathname === '/api/auth/session') {
+      console.log(`🔍 [PROXY] Session check endpoint (no refresh): ${pathname}`);
+      
+      const username = request.headers.get('x-username');
+      const sessionToken = request.headers.get('x-session-token');
+      
+      if (!username || !sessionToken) {
+        console.log(`❌ [PROXY] Session check blocked: Missing headers`);
+        return addCorsHeaders(
+          NextResponse.json(
+            {
+              success: false,
+              message: 'Username and session token required',
+              code: 'MISSING_HEADERS'
+            },
+            { status: 400 }
+          )
+        );
+      }
+      
+      console.log(`👤 [PROXY] Session check for: "${username}"`);
+      console.log(`🔑 [PROXY] Token: "${sessionToken?.substring(0, 8)}..."`);
+      
+      // Cho phép request đi tiếp để endpoint /api/auth/session tự xử lý
+      const response = NextResponse.next();
+      
+      // Thêm debug headers
+      response.headers.set('x-proxy-processed', 'true');
+      response.headers.set('x-proxy-timestamp', new Date().toISOString());
+      response.headers.set('x-proxy-mode', 'session-check-only');
+      response.headers.set('x-proxy-username', username);
+      
+      return addCorsHeaders(response);
+    }
+    
+    // Các endpoint API khác - cần check và refresh session
+    console.log(`🔐 [PROXY] Protected API route (with refresh): ${pathname}`);
     
     const username = request.headers.get('x-username');
     const sessionToken = request.headers.get('x-session-token');
@@ -92,7 +118,7 @@ export function proxy(request: NextRequest) {
       );
     }
     
-    // Kiểm tra session có hợp lệ không (bao gồm cả token validation)
+    // Kiểm tra và refresh session cho các endpoint khác
     const sessionCheck = checkAndRefreshSession(username, sessionToken);
     
     if (!sessionCheck.valid) {
@@ -136,6 +162,7 @@ export function proxy(request: NextRequest) {
     response.headers.set('x-proxy-processed', 'true');
     response.headers.set('x-proxy-timestamp', new Date().toISOString());
     response.headers.set('x-proxy-username', username);
+    response.headers.set('x-proxy-mode', 'full-auth-check');
     response.headers.set('x-session-expires', sessionCheck.expiresAt || '');
     
     return addCorsHeaders(response);
